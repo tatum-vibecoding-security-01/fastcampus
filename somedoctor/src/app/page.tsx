@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { parseKakao } from "@/lib/kakaoParser";
+import { maskMessages } from "@/lib/piiMask";
 import {
   computeMetrics,
   computeSelfPatterns,
@@ -12,6 +13,7 @@ import ResultDashboard from "@/components/ResultDashboard";
 import ChatCounselor from "@/components/ChatCounselor";
 import ReplyCoach from "@/components/ReplyCoach";
 import PatternFeedback from "@/components/PatternFeedback";
+import AuthStatus from "@/components/AuthStatus";
 
 type Step = "landing" | "speaker" | "loading" | "result";
 
@@ -75,18 +77,50 @@ export default function Home() {
       );
       return;
     }
-    setMessages(parsed.messages);
+    // 보안 계층: 파싱 직후·다운스트림(지표 계산·서버 전송·향후 DB 저장) 진입 전에
+    // 개인정보를 마스킹한다. 이후 상태에는 마스킹본만 흐르고 원문은 남기지 않는다.
+    const masked = maskMessages(parsed.messages);
+    setMessages(masked);
     setSpeakers(parsed.speakers);
     setMe(parsed.speakers[0]);
     setStep("speaker");
   }
 
-  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+  // 업로드 파일 크기 상한: 5MB (프론트는 UX용 조기 차단, 실제 검증은 서버가 담당)
+  const MAX_FILE_BYTES = 5 * 1024 * 1024;
+  // 실패 시 원인을 드러내지 않는 단일 일반 메시지. 상세 사유는 서버 로그에만 남는다.
+  const GENERIC_FILE_ERROR =
+    "파일을 처리할 수 없어요. 올바른 카카오톡 대화 .txt 파일(최대 5MB)인지 확인해 주세요.";
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    setError(null);
     const f = e.target.files?.[0];
+    // 같은 파일을 다시 선택해도 onChange가 발화하도록 값 초기화
+    if (fileRef.current) fileRef.current.value = "";
     if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => ingest(String(reader.result ?? ""));
-    reader.readAsText(f, "utf-8");
+
+    // 프론트 검증은 UX 목적(빠른 피드백)일 뿐, 보안 경계가 아니다.
+    // 명백히 큰 파일은 업로드 왕복 없이 즉시 걸러 사용성만 개선한다.
+    if (f.size > MAX_FILE_BYTES) {
+      setError(GENERIC_FILE_ERROR);
+      return;
+    }
+
+    // 권위 있는 검증(크기·UTF-8 디코딩)은 서버가 수행하고, 검증된 텍스트를 돌려준다.
+    try {
+      const form = new FormData();
+      form.append("file", f);
+      const res = await fetch("/api/upload", { method: "POST", body: form });
+      if (!res.ok) {
+        // 서버가 반환한 일반 메시지만 표시(구체 사유는 서버 로그에만 존재).
+        setError(GENERIC_FILE_ERROR);
+        return;
+      }
+      const data = await res.json();
+      ingest(String(data.text ?? ""));
+    } catch {
+      setError(GENERIC_FILE_ERROR);
+    }
   }
 
   async function runAnalysis() {
@@ -132,6 +166,10 @@ export default function Home() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10 sm:py-16">
+      <div className="mb-2">
+        <AuthStatus />
+      </div>
+
       {/* 헤더 */}
       <header className="mb-8 text-center">
         <h1 className="text-3xl font-extrabold tracking-tight">

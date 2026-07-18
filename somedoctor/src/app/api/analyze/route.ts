@@ -1,18 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { analyzeSystem, metricsToText } from "@/lib/prompts";
+import { analyzeSystem, metricsToText, ANALYSIS_SCHEMA } from "@/lib/prompts";
 import type { Analysis, Metrics } from "@/lib/types";
 
 export const runtime = "nodejs";
 // 비저장 원칙: 어떤 응답도 캐시하지 않는다.
 export const dynamic = "force-dynamic";
 
-function extractJson(text: string): string {
-  // 코드펜스나 앞뒤 잡텍스트가 있어도 첫 { ~ 마지막 } 를 추출
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1) return text;
-  return text.slice(start, end + 1);
+type Tone = "positive" | "neutral" | "caution";
+const TONES: Tone[] = ["positive", "neutral", "caution"];
+
+/**
+ * 방어적 정규화: 모델이 스키마를 벗어난 형태(신호를 문자열로 반환 등)를 보내도
+ * 프론트(ResultDashboard)가 기대하는 {title, detail, tone} 형태로 강제 변환한다.
+ */
+function normalizeAnalysis(raw: unknown): Analysis {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const signalsIn = Array.isArray(obj.signals) ? obj.signals : [];
+  const signals = signalsIn.slice(0, 3).map((s) => {
+    if (typeof s === "string") {
+      return { title: "신호", detail: s, tone: "neutral" as Tone };
+    }
+    const o = (s ?? {}) as Record<string, unknown>;
+    const tone = TONES.includes(o.tone as Tone) ? (o.tone as Tone) : "neutral";
+    return {
+      title: typeof o.title === "string" ? o.title : "신호",
+      detail:
+        typeof o.detail === "string"
+          ? o.detail
+          : typeof o.title === "string"
+          ? o.title
+          : "",
+      tone,
+    };
+  });
+
+  const tempNum = Number(obj.temperature);
+  return {
+    temperature: Math.max(
+      0,
+      Math.min(100, Math.round(Number.isFinite(tempNum) ? tempNum : 50))
+    ),
+    headline: typeof obj.headline === "string" ? obj.headline : "",
+    signals,
+    summary: typeof obj.summary === "string" ? obj.summary : "",
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -49,7 +81,15 @@ export async function POST(req: NextRequest) {
 [대화 발췌 (익명화, 최근 순)]
 ${sample}
 
-위 데이터를 분석해 지정된 JSON 스키마(temperature, headline, signals[3], summary)로만 응답하세요. 다른 텍스트나 코드펜스는 붙이지 마세요.`;
+위 데이터를 분석해 record_analysis 도구로 결과를 제출하세요. signals는 정확히 3개, 각각 title·detail·tone을 모두 채웁니다.`;
+
+  // tool use로 출력 구조를 강제한다(자유 JSON 파싱 대신). strict로 스키마를 검증.
+  const analysisTool = {
+    name: "record_analysis",
+    description: "관계 진단 결과를 지정된 구조로 제출한다.",
+    strict: true,
+    input_schema: ANALYSIS_SCHEMA,
+  } as unknown as Anthropic.Tool;
 
   try {
     const resp = await client.messages.create({
@@ -57,26 +97,20 @@ ${sample}
       max_tokens: 3000,
       system: analyzeSystem(),
       messages: [{ role: "user", content: userContent }],
+      tools: [analysisTool],
+      tool_choice: { type: "tool", name: "record_analysis" },
     });
 
-    const textBlock = resp.content.find((b) => b.type === "text");
-    const rawText = textBlock && "text" in textBlock ? textBlock.text : "";
-
-    let analysis: Analysis;
-    try {
-      analysis = JSON.parse(extractJson(rawText));
-    } catch {
+    const toolUse = resp.content.find((b) => b.type === "tool_use");
+    if (!toolUse || !("input" in toolUse)) {
       return NextResponse.json(
         { error: "분석 결과를 해석하지 못했습니다. 다시 시도해 주세요." },
         { status: 502 }
       );
     }
 
-    // 온도 안전 클램프
-    analysis.temperature = Math.max(
-      0,
-      Math.min(100, Math.round(analysis.temperature))
-    );
+    // 방어적 정규화로 프론트 계약(신호 객체 3개)을 보장
+    const analysis = normalizeAnalysis(toolUse.input);
 
     return NextResponse.json(
       { analysis },
