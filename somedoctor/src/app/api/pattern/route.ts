@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { patternSystem } from "@/lib/prompts";
+import { getUser } from "@/lib/supabase/server";
 import type { Metrics, PatternFeedback, SelfPatterns } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -19,6 +20,11 @@ interface PatternBody {
 }
 
 export async function POST(req: NextRequest) {
+  const user = await getUser();
+  if (!user) {
+    return NextResponse.json({ error: "로그인이 필요해요." }, { status: 401 });
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(

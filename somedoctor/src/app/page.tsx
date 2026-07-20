@@ -1,7 +1,11 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import type { User } from "@supabase/supabase-js";
+import { createClient } from "@/lib/supabase/client";
 import { parseKakao } from "@/lib/kakaoParser";
+import { validateTextUpload } from "@/lib/uploadSecurity";
 import {
   computeMetrics,
   computeSelfPatterns,
@@ -22,8 +26,29 @@ const PrivacyBadge = () => (
 );
 
 export default function Home() {
+  const router = useRouter();
+  const supabase = useMemo(() => createClient(), []);
+  const [user, setUser] = useState<User | null>(null);
+
   const [step, setStep] = useState<Step>("landing");
   const [error, setError] = useState<string | null>(null);
+
+  // 로그인 상태 추적 (헤더 표시 + 분석 게이팅용)
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUser(data.user));
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, [supabase]);
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    setUser(null);
+    router.refresh();
+  }
 
   const [messages, setMessages] = useState<KakaoMessage[]>([]);
   const [speakers, setSpeakers] = useState<string[]>([]);
@@ -81,16 +106,51 @@ export default function Home() {
     setStep("speaker");
   }
 
-  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => ingest(String(reader.result ?? ""));
-    reader.readAsText(f, "utf-8");
+    setError(null);
+
+    try {
+      // 1차(클라이언트): 크기·UTF-8 텍스트 검사로 빠르게 거부 (불필요한 업로드 방지)
+      const buf = await f.arrayBuffer();
+      const local = validateTextUpload(buf);
+      if (!local.ok) {
+        setError(local.error);
+        if (fileRef.current) fileRef.current.value = "";
+        return;
+      }
+
+      // 2차(서버): 동일 검사 + 파일명 랜덤 재생성/검증. 서버가 정제한 텍스트로 파싱.
+      const fd = new FormData();
+      fd.append("file", f);
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(data.error ?? "파일 검증에 실패했어요.");
+        if (fileRef.current) fileRef.current.value = "";
+        return;
+      }
+
+      ingest(String(data.text ?? ""));
+    } catch {
+      setError("파일을 읽는 중 문제가 발생했어요. 다시 시도해 주세요.");
+      if (fileRef.current) fileRef.current.value = "";
+    }
   }
 
   async function runAnalysis() {
     if (!me || !other) return;
+
+    // 분석 실행 시점에 로그인 요구. 미로그인이면 로그인 후 복귀.
+    const {
+      data: { user: current },
+    } = await supabase.auth.getUser();
+    if (!current) {
+      router.push(`/login?redirect=${encodeURIComponent("/")}`);
+      return;
+    }
+
     setStep("loading");
     setError(null);
 
@@ -105,6 +165,10 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ metrics: m, sample }),
       });
+      if (res.status === 401) {
+        router.push(`/login?redirect=${encodeURIComponent("/")}`);
+        return;
+      }
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "분석에 실패했어요.");
@@ -132,6 +196,28 @@ export default function Home() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10 sm:py-16">
+      {/* 상단 인증 바 */}
+      <div className="mb-4 flex items-center justify-end gap-3 text-xs">
+        {user ? (
+          <>
+            <span className="text-ink/50">{user.email ?? "로그인됨"}</span>
+            <button
+              onClick={signOut}
+              className="rounded-full border border-black/10 px-3 py-1 font-medium text-ink/70 hover:bg-black/[0.03]"
+            >
+              로그아웃
+            </button>
+          </>
+        ) : (
+          <a
+            href="/login"
+            className="rounded-full border border-black/10 px-3 py-1 font-medium text-ink/70 hover:bg-black/[0.03]"
+          >
+            로그인
+          </a>
+        )}
+      </div>
+
       {/* 헤더 */}
       <header className="mb-8 text-center">
         <h1 className="text-3xl font-extrabold tracking-tight">

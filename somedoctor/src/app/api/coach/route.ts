@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { coachSystem, coachUser } from "@/lib/prompts";
+import { detectInjectionSignals } from "@/lib/promptGuard";
+import { getUser } from "@/lib/supabase/server";
 import type { Metrics, ReplyOption } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -21,6 +23,11 @@ interface CoachBody {
 }
 
 export async function POST(req: NextRequest) {
+  const user = await getUser();
+  if (!user) {
+    return NextResponse.json({ error: "로그인이 필요해요." }, { status: 401 });
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -48,6 +55,13 @@ export async function POST(req: NextRequest) {
   }
 
   const client = new Anthropic({ apiKey });
+
+  // 감사용: 상대 메시지/발췌에 인젝션 의심 신호가 있으면 (원문 없이) 기록만 남긴다.
+  // 방어는 coachUser의 fenceUntrusted + 시스템 보안 정책이 담당한다.
+  const signals = detectInjectionSignals(`${incoming}\n${recentContext ?? ""}`);
+  if (signals.length > 0) {
+    console.warn(`[promptGuard] coach: 인젝션 의심 신호 감지 → ${signals.join(", ")}`);
+  }
 
   try {
     const resp = await client.messages.create({

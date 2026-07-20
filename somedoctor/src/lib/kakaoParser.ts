@@ -1,4 +1,5 @@
 import type { KakaoMessage, ParseResult } from "./types";
+import { maskPII } from "./pii";
 
 /**
  * 카카오톡 "대화 내보내기" 텍스트를 구조화한다.
@@ -123,6 +124,12 @@ export function parseKakao(raw: string): ParseResult {
   const speakers = [...speakerSet.entries()]
     .sort((a, b) => a[1] - b[1])
     .map(([s]) => s);
+
+  // 파싱된 모든 메시지 본문에서 개인정보(전화번호/계좌번호/이메일 등)를 마스킹한다.
+  // 여러 줄 이어붙이기가 끝난 최종 시점에 적용해야 분할된 PII도 잡을 수 있다.
+  for (const msg of messages) {
+    msg.text = maskPII(msg.text);
+  }
 
   return { messages, speakers, totalLines: lines.length };
 }

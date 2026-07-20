@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { chatSystem } from "@/lib/prompts";
+import { getUser } from "@/lib/supabase/server";
 import type { Metrics } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -13,6 +14,11 @@ interface ChatBody {
 }
 
 export async function POST(req: NextRequest) {
+  const user = await getUser();
+  if (!user) {
+    return new Response("로그인이 필요해요.", { status: 401 });
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return new Response(
