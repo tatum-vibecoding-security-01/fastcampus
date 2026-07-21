@@ -6,12 +6,19 @@ import {
   generateSafeFilename,
   isSafeFilename,
 } from "@/lib/uploadSecurity";
+import { requireAuth } from "@/lib/entitlement";
 
 export const runtime = "nodejs";
 // 비저장 원칙: 업로드 파일은 디스크에 쓰지 않고 메모리에서 검증만 한다.
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  // 접근 통제: 업로드는 로그인한 사용자만 (익명 리소스 남용 방지).
+  const gate = await requireAuth();
+  if (!gate.ok) {
+    return NextResponse.json({ error: gate.error }, { status: gate.status });
+  }
+
   // 멀티파트 폼 파싱
   let form: FormData;
   try {

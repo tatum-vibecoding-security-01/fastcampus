@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { chatSystem } from "@/lib/prompts";
-import { getUser } from "@/lib/supabase/server";
+import { requirePremium } from "@/lib/entitlement";
 import type { Metrics } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -14,9 +14,10 @@ interface ChatBody {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getUser();
-  if (!user) {
-    return new Response("로그인이 필요해요.", { status: 401 });
+  // 접근 통제: 상담 챗은 프리미엄(이용권) 전용 기능.
+  const gate = await requirePremium();
+  if (!gate.ok) {
+    return new Response(gate.error, { status: gate.status });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

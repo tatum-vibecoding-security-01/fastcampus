@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { patternSystem } from "@/lib/prompts";
-import { getUser } from "@/lib/supabase/server";
+import { requirePremium } from "@/lib/entitlement";
 import type { Metrics, PatternFeedback, SelfPatterns } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -20,9 +20,10 @@ interface PatternBody {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getUser();
-  if (!user) {
-    return NextResponse.json({ error: "로그인이 필요해요." }, { status: 401 });
+  // 접근 통제: 대화 습관 상세 리포트는 프리미엄(이용권) 전용 기능.
+  const gate = await requirePremium();
+  if (!gate.ok) {
+    return NextResponse.json({ error: gate.error }, { status: gate.status });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

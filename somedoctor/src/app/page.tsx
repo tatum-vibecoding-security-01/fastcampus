@@ -16,6 +16,7 @@ import ResultDashboard from "@/components/ResultDashboard";
 import ChatCounselor from "@/components/ChatCounselor";
 import ReplyCoach from "@/components/ReplyCoach";
 import PatternFeedback from "@/components/PatternFeedback";
+import CheckoutButton from "@/components/CheckoutButton";
 
 type Step = "landing" | "speaker" | "loading" | "result";
 
@@ -32,6 +33,8 @@ export default function Home() {
 
   const [step, setStep] = useState<Step>("landing");
   const [error, setError] = useState<string | null>(null);
+  // 프리미엄 결제 여부 (서버 /api/payments/status 로 확인). null = 아직 모름
+  const [premium, setPremium] = useState<boolean | null>(null);
 
   // 로그인 상태 추적 (헤더 표시 + 분석 게이팅용)
   useEffect(() => {
@@ -43,6 +46,18 @@ export default function Home() {
     });
     return () => subscription.unsubscribe();
   }, [supabase]);
+
+  // 로그인 상태가 되면 프리미엄 결제 여부 확인 (결제 후 복귀 시 반영)
+  useEffect(() => {
+    if (!user) {
+      setPremium(null);
+      return;
+    }
+    fetch("/api/payments/status")
+      .then((r) => (r.ok ? r.json() : { premium: false }))
+      .then((d) => setPremium(Boolean(d.premium)))
+      .catch(() => setPremium(false));
+  }, [user]);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -354,19 +369,52 @@ export default function Home() {
       {step === "result" && metrics && analysis && (
         <section className="space-y-6">
           <ResultDashboard metrics={metrics} analysis={analysis} />
-          {selfPatterns && (
-            <PatternFeedback metrics={metrics} patterns={selfPatterns} />
+
+          {/* 프리미엄 리포트 결제 CTA — 결제하기가 잘 보이도록 강조 */}
+          {premium ? (
+            <div className="flex items-center justify-center gap-2 rounded-2xl border border-[#2e9e5b33] bg-[#2e9e5b0d] p-4 text-sm font-semibold text-[#2e9e5b]">
+              ✨ 프리미엄 리포트가 활성화됐어요
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-[#e0245e33] bg-gradient-to-br from-[#e0245e0d] to-transparent p-6 shadow-sm">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="rounded-full bg-[#e0245e] px-2 py-0.5 text-[11px] font-bold text-white">
+                  PREMIUM
+                </span>
+                <span className="text-xs text-ink/50">단건 결제 · 9,900원</span>
+              </div>
+              <h3 className="text-lg font-bold">프리미엄 리포트로 더 깊게 보기</h3>
+              <ul className="mt-3 mb-4 space-y-1.5 text-sm text-ink/70">
+                <li>🔬 관계 신호 심화 분석과 맞춤 개선 로드맵</li>
+                <li>💌 상황별 답장 코칭 무제한</li>
+                <li>📈 대화 습관 상세 리포트</li>
+              </ul>
+              <CheckoutButton label="프리미엄 리포트 결제하기 · 9,900원" />
+              <p className="mt-2 text-center text-[11px] text-ink/40">
+                토스페이먼츠 테스트 결제 · 실제 청구되지 않아요
+              </p>
+            </div>
           )}
-          <ReplyCoach
-            metrics={metrics}
-            analysisSummary={`${analysis.headline} ${analysis.summary}`}
-            recentContext={coachInputs.recentContext}
-            otherRecent={coachInputs.otherRecent}
-          />
-          <ChatCounselor
-            metrics={metrics}
-            analysisSummary={`${analysis.headline} ${analysis.summary}`}
-          />
+
+          {/* 프리미엄 전용 기능. 실제 접근 통제는 서버(각 API의 requirePremium)가 강제하며,
+              여기서는 이용권이 있는 사용자에게만 노출해 불필요한 403을 피한다. */}
+          {premium && (
+            <>
+              {selfPatterns && (
+                <PatternFeedback metrics={metrics} patterns={selfPatterns} />
+              )}
+              <ReplyCoach
+                metrics={metrics}
+                analysisSummary={`${analysis.headline} ${analysis.summary}`}
+                recentContext={coachInputs.recentContext}
+                otherRecent={coachInputs.otherRecent}
+              />
+              <ChatCounselor
+                metrics={metrics}
+                analysisSummary={`${analysis.headline} ${analysis.summary}`}
+              />
+            </>
+          )}
           <button
             onClick={reset}
             className="w-full rounded-xl border border-black/10 py-3 text-sm font-semibold"
